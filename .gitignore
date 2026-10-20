@@ -1,0 +1,8 @@
+tools/
+results/
+config/local.env
+config/env/cloud*.properties
+gridgain-license.json
+.DS_Store
+__pycache__/
+*.jtl

@@ -1,0 +1,18 @@
+# Copy to cloud.properties and fill in. Run JMeter from a dedicated load-gen VM in the same AZ/VPC as the cluster.
+env_name=cloud-aws-m6i.2xlarge-x3
+jdbc_url=jdbc:ignite:thin://gg-0.internal:10800\,gg-1.internal:10800\,gg-2.internal:10800
+zone_partitions=128
+zone_replicas=3
+cluster_nodes=3
+cluster_node_spec=m6i.2xlarge (8 vCPU/32 GiB), gp3 NVMe
+collector=none
+# fault injection: command templates, {node} is the node name used in profiles' chaos_events (node1, node2, ...)
+chaos_driver=cmd
+chaos_cmd_stop=ssh {node}.internal 'sudo systemctl stop gridgain9'
+chaos_cmd_kill=ssh {node}.internal 'sudo pkill -9 -f gridgain'
+chaos_cmd_start=ssh {node}.internal 'sudo systemctl start gridgain9'
+chaos_cmd_pause=ssh {node}.internal 'sudo pkill -STOP -f gridgain'
+chaos_cmd_unpause=ssh {node}.internal 'sudo pkill -CONT -f gridgain'
+# exit 0 when the node is back: here, REST says STARTED
+chaos_cmd_ready=curl -sf http://{node}.internal:10300/management/v1/node/state | grep -q STARTED
+# Kubernetes alternative: chaos_cmd_stop=kubectl delete pod {node} --grace-period=30 ; chaos_cmd_kill=kubectl delete pod {node} --grace-period=0 --force

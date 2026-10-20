@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3"><hashTree><TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="GG9 load analytical" enabled="true"><boolProp name="TestPlan.functional_mode">false</boolProp><boolProp name="TestPlan.serialize_threadgroups">true</boolProp><elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true"><collectionProp name="Arguments.arguments"></collectionProp></elementProp></TestPlan><hashTree><JDBCDataSource guiclass="TestBeanGUI" testclass="JDBCDataSource" testname="GridGain JDBC pool" enabled="true"><boolProp name="autocommit">true</boolProp><stringProp name="checkQuery">${__P(pool_check_query,)}</stringProp><stringProp name="connectionAge">5000</stringProp><stringProp name="connectionProperties"></stringProp><stringProp name="dataSource">gg9</stringProp><stringProp name="driver">org.apache.ignite.jdbc.IgniteJdbcDriver</stringProp><stringProp name="initQuery"></stringProp><boolProp name="keepAlive">true</boolProp><stringProp name="password"></stringProp><stringProp name="poolMax">${__P(load_threads,8)}</stringProp><stringProp name="timeout">30000</stringProp><stringProp name="transactionIsolation">DEFAULT</stringProp><stringProp name="trimInterval">60000</stringProp><stringProp name="dbUrl">${__P(jdbc_url,jdbc:ignite:thin://localhost:10800\,localhost:10801\,localhost:10802)}</stringProp><stringProp name="username"></stringProp></JDBCDataSource><hashTree></hashTree><ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="load customers" enabled="true"><stringProp name="ThreadGroup.on_sample_error">continue</stringProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true"><boolProp name="LoopController.continue_forever">false</boolProp><stringProp name="LoopController.loops">-1</stringProp></elementProp><stringProp name="ThreadGroup.num_threads">${__P(load_threads,8)}</stringProp><stringProp name="ThreadGroup.ramp_time">1</stringProp><boolProp name="ThreadGroup.scheduler">false</boolProp><stringProp name="ThreadGroup.duration"></stringProp><stringProp name="ThreadGroup.delay"></stringProp><boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp></ThreadGroup><hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="load.customers" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+import java.util.concurrent.ThreadLocalRandom
+import org.apache.jmeter.protocol.jdbc.config.DataSourceElement
+long total = Long.parseLong(props.getProperty('olap_customers', '100000'))
+int batch = Integer.parseInt(props.getProperty('load_batch', '1000'))
+long it = (vars.getObject('it') ?: 0L) + 1L
+vars.putObject('it', it)
+long n = (it - 1L) * Long.parseLong(props.getProperty("load_threads", "8")) + ctx.getThreadNum()   // deterministic, no shared counter
+long start = n * batch + 1L
+if (start &gt; total) { SampleResult.setIgnore(); SampleResult.setStopThread(true); return 'done' }
+long end = Math.min(total, start + batch - 1L)
+def rnd = ThreadLocalRandom.current()
+def c = DataSourceElement.getConnection('gg9')
+try {
+  def ps = c.prepareStatement('INSERT INTO customers (id, name, segment, region) VALUES (?, ?, ?, ?)')
+  for (long id = start; id &lt;= end; id++) {
+    def row = [id, 'cust-' + id, ['RETAIL','SMB','ENTERPRISE','PUBLIC'][rnd.nextInt(4)], ['EU','US','APAC','LATAM'][rnd.nextInt(4)]]
+    for (int i = 0; i &lt; row.size(); i++) { ps.setObject(i + 1, row[i]) }
+    ps.addBatch()
+  }
+  ps.executeBatch()
+} finally { c.close() }
+return 'rows ' + (end - start + 1L)
+</stringProp></JSR223Sampler><hashTree></hashTree></hashTree><ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="load products" enabled="true"><stringProp name="ThreadGroup.on_sample_error">continue</stringProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true"><boolProp name="LoopController.continue_forever">false</boolProp><stringProp name="LoopController.loops">-1</stringProp></elementProp><stringProp name="ThreadGroup.num_threads">${__P(load_threads,8)}</stringProp><stringProp name="ThreadGroup.ramp_time">1</stringProp><boolProp name="ThreadGroup.scheduler">false</boolProp><stringProp name="ThreadGroup.duration"></stringProp><stringProp name="ThreadGroup.delay"></stringProp><boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp></ThreadGroup><hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="load.products" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+import java.util.concurrent.ThreadLocalRandom
+import org.apache.jmeter.protocol.jdbc.config.DataSourceElement
+long total = Long.parseLong(props.getProperty('olap_products', '5000'))
+int batch = Integer.parseInt(props.getProperty('load_batch', '1000'))
+long it = (vars.getObject('it') ?: 0L) + 1L
+vars.putObject('it', it)
+long n = (it - 1L) * Long.parseLong(props.getProperty("load_threads", "8")) + ctx.getThreadNum()   // deterministic, no shared counter
+long start = n * batch + 1L
+if (start &gt; total) { SampleResult.setIgnore(); SampleResult.setStopThread(true); return 'done' }
+long end = Math.min(total, start + batch - 1L)
+def rnd = ThreadLocalRandom.current()
+def c = DataSourceElement.getConnection('gg9')
+try {
+  def ps = c.prepareStatement('INSERT INTO products (id, category, price) VALUES (?, ?, ?)')
+  for (long id = start; id &lt;= end; id++) {
+    def row = [id, 'cat' + (id % 25), new BigDecimal(100 + rnd.nextInt(99900)).movePointLeft(2)]
+    for (int i = 0; i &lt; row.size(); i++) { ps.setObject(i + 1, row[i]) }
+    ps.addBatch()
+  }
+  ps.executeBatch()
+} finally { c.close() }
+return 'rows ' + (end - start + 1L)
+</stringProp></JSR223Sampler><hashTree></hashTree></hashTree><ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="load orders" enabled="true"><stringProp name="ThreadGroup.on_sample_error">continue</stringProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true"><boolProp name="LoopController.continue_forever">false</boolProp><stringProp name="LoopController.loops">-1</stringProp></elementProp><stringProp name="ThreadGroup.num_threads">${__P(load_threads,8)}</stringProp><stringProp name="ThreadGroup.ramp_time">1</stringProp><boolProp name="ThreadGroup.scheduler">false</boolProp><stringProp name="ThreadGroup.duration"></stringProp><stringProp name="ThreadGroup.delay"></stringProp><boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp></ThreadGroup><hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="load.orders" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+import java.util.concurrent.ThreadLocalRandom
+import org.apache.jmeter.protocol.jdbc.config.DataSourceElement
+long total = Long.parseLong(props.getProperty('olap_orders', '2000000'))
+int batch = Integer.parseInt(props.getProperty('load_batch', '1000'))
+long it = (vars.getObject('it') ?: 0L) + 1L
+vars.putObject('it', it)
+long n = (it - 1L) * Long.parseLong(props.getProperty("load_threads", "8")) + ctx.getThreadNum()   // deterministic, no shared counter
+long start = n * batch + 1L
+if (start &gt; total) { SampleResult.setIgnore(); SampleResult.setStopThread(true); return 'done' }
+long end = Math.min(total, start + batch - 1L)
+def rnd = ThreadLocalRandom.current()
+def c = DataSourceElement.getConnection('gg9')
+try {
+  def ps = c.prepareStatement('INSERT INTO orders (id, customer_id, product_id, qty, amount, order_day, region, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+  for (long id = start; id &lt;= end; id++) {
+    def row = [id, 1L + rnd.nextInt((int) Math.max(1L, total.intdiv(20L))), 1L + rnd.nextInt(5000), 1 + rnd.nextInt(10), new BigDecimal(100 + rnd.nextInt(500000)).movePointLeft(2), rnd.nextInt(365), ['EU','US','APAC','LATAM'][rnd.nextInt(4)], ['NEW','PAID','SHIPPED','RETURNED'][rnd.nextInt(4)]]
+    for (int i = 0; i &lt; row.size(); i++) { ps.setObject(i + 1, row[i]) }
+    ps.addBatch()
+  }
+  ps.executeBatch()
+} finally { c.close() }
+return 'rows ' + (end - start + 1L)
+</stringProp></JSR223Sampler><hashTree></hashTree></hashTree></hashTree></hashTree></jmeterTestPlan>

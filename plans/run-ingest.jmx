@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3"><hashTree><TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="GG9 run ingest" enabled="true"><boolProp name="TestPlan.functional_mode">false</boolProp><boolProp name="TestPlan.serialize_threadgroups">true</boolProp><elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true"><collectionProp name="Arguments.arguments"></collectionProp></elementProp></TestPlan><hashTree><JDBCDataSource guiclass="TestBeanGUI" testclass="JDBCDataSource" testname="GridGain JDBC pool" enabled="true"><boolProp name="autocommit">true</boolProp><stringProp name="checkQuery">${__P(pool_check_query,)}</stringProp><stringProp name="connectionAge">5000</stringProp><stringProp name="connectionProperties"></stringProp><stringProp name="dataSource">gg9</stringProp><stringProp name="driver">org.apache.ignite.jdbc.IgniteJdbcDriver</stringProp><stringProp name="initQuery"></stringProp><boolProp name="keepAlive">true</boolProp><stringProp name="password"></stringProp><stringProp name="poolMax">${__intSum(${__P(threads,32)},8)}</stringProp><stringProp name="timeout">30000</stringProp><stringProp name="transactionIsolation">DEFAULT</stringProp><stringProp name="trimInterval">60000</stringProp><stringProp name="dbUrl">${__P(jdbc_url,jdbc:ignite:thin://localhost:10800\,localhost:10801\,localhost:10802)}</stringProp><stringProp name="username"></stringProp></JDBCDataSource><hashTree></hashTree><ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="workload" enabled="true"><stringProp name="ThreadGroup.on_sample_error">continue</stringProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true"><boolProp name="LoopController.continue_forever">false</boolProp><stringProp name="LoopController.loops">-1</stringProp></elementProp><stringProp name="ThreadGroup.num_threads">${__P(threads,32)}</stringProp><stringProp name="ThreadGroup.ramp_time">${__P(rampup,60)}</stringProp><boolProp name="ThreadGroup.scheduler">true</boolProp><stringProp name="ThreadGroup.duration">${__P(duration,600)}</stringProp><stringProp name="ThreadGroup.delay">${__P(startup_delay,0)}</stringProp><boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp></ThreadGroup><hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="pick-op" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+import java.util.concurrent.ThreadLocalRandom
+def rnd = ThreadLocalRandom.current()
+def gp = { String k, String d -&gt; props.getProperty(k, d) }
+int single = Integer.parseInt(gp('mix_ingest_single', '10'))
+int op = rnd.nextInt(100) &lt; single ? 1 : 0
+long seq = (vars.getObject('seq') ?: 0L) + 1L
+vars.putObject('seq', seq)
+long salt = Long.parseLong(gp('run_salt', '0'))
+vars.put('op', String.valueOf(op))
+vars.put('base', String.valueOf(((salt * 10000L + ctx.getThreadNum()) * 1000000000L) + seq * 10000L))
+SampleResult.setIgnore()
+return 'op=' + op
+</stringProp></JSR223Sampler><hashTree></hashTree><SwitchController guiclass="SwitchControllerGui" testclass="SwitchController" testname="op-mix" enabled="true"><stringProp name="SwitchController.value">${op}</stringProp></SwitchController><hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="ingest.batch" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+import java.util.concurrent.ThreadLocalRandom
+import org.apache.jmeter.protocol.jdbc.config.DataSourceElement
+def rnd = ThreadLocalRandom.current()
+int n = Integer.parseInt(props.getProperty('ingest_batch', '500'))
+long base = Long.parseLong(vars.get('base'))
+def c = DataSourceElement.getConnection('gg9')
+try {
+  def ps = c.prepareStatement('INSERT INTO events (id, device_id, ts, metric, val, tags) VALUES (?, ?, ?, ?, ?, ?)')
+  for (int i = 0; i &lt; n; i++) {
+    ps.setLong(1, base + i); ps.setInt(2, rnd.nextInt(100000))
+    ps.setTimestamp(3, new java.sql.Timestamp(System.currentTimeMillis()))
+    ps.setString(4, 'metric' + rnd.nextInt(50)); ps.setDouble(5, rnd.nextDouble() * 100)
+    ps.setString(6, 'tag-' + rnd.nextInt(1000) + '-' + 'x' * 60)
+    ps.addBatch()
+  }
+  ps.executeBatch()
+} finally { c.close() }
+return 'batch ' + n
+</stringProp></JSR223Sampler><hashTree></hashTree><JDBCSampler guiclass="TestBeanGUI" testclass="JDBCSampler" testname="ingest.single" enabled="true"><stringProp name="dataSource">gg9</stringProp><stringProp name="queryType">Prepared Update Statement</stringProp><stringProp name="query">INSERT INTO events (id, device_id, ts, metric, val, tags) VALUES (?, 1, CURRENT_TIMESTAMP, 'm', 1.0, 't')</stringProp><stringProp name="queryArguments">${base}</stringProp><stringProp name="queryArgumentsTypes">BIGINT</stringProp><stringProp name="variableNames"></stringProp><stringProp name="resultVariable"></stringProp><stringProp name="queryTimeout"></stringProp><stringProp name="resultSetMaxRows"></stringProp><stringProp name="resultSetHandler">Count Records</stringProp></JDBCSampler><hashTree></hashTree></hashTree><ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="think-time" enabled="true"><stringProp name="ConstantTimer.delay">${__P(think_ms,0)}</stringProp></ConstantTimer><hashTree></hashTree></hashTree></hashTree></hashTree></jmeterTestPlan>

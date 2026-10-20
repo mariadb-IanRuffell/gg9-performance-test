@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3"><hashTree><TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="GG9 run oltp" enabled="true"><boolProp name="TestPlan.functional_mode">false</boolProp><boolProp name="TestPlan.serialize_threadgroups">true</boolProp><elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true"><collectionProp name="Arguments.arguments"></collectionProp></elementProp></TestPlan><hashTree><JDBCDataSource guiclass="TestBeanGUI" testclass="JDBCDataSource" testname="GridGain JDBC pool" enabled="true"><boolProp name="autocommit">true</boolProp><stringProp name="checkQuery">${__P(pool_check_query,)}</stringProp><stringProp name="connectionAge">5000</stringProp><stringProp name="connectionProperties"></stringProp><stringProp name="dataSource">gg9</stringProp><stringProp name="driver">org.apache.ignite.jdbc.IgniteJdbcDriver</stringProp><stringProp name="initQuery"></stringProp><boolProp name="keepAlive">true</boolProp><stringProp name="password"></stringProp><stringProp name="poolMax">${__intSum(${__P(threads,32)},8)}</stringProp><stringProp name="timeout">30000</stringProp><stringProp name="transactionIsolation">DEFAULT</stringProp><stringProp name="trimInterval">60000</stringProp><stringProp name="dbUrl">${__P(jdbc_url,jdbc:ignite:thin://localhost:10800\,localhost:10801\,localhost:10802)}</stringProp><stringProp name="username"></stringProp></JDBCDataSource><hashTree></hashTree><ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="workload" enabled="true"><stringProp name="ThreadGroup.on_sample_error">continue</stringProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true"><boolProp name="LoopController.continue_forever">false</boolProp><stringProp name="LoopController.loops">-1</stringProp></elementProp><stringProp name="ThreadGroup.num_threads">${__P(threads,32)}</stringProp><stringProp name="ThreadGroup.ramp_time">${__P(rampup,60)}</stringProp><boolProp name="ThreadGroup.scheduler">true</boolProp><stringProp name="ThreadGroup.duration">${__P(duration,600)}</stringProp><stringProp name="ThreadGroup.delay">${__P(startup_delay,0)}</stringProp><boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp></ThreadGroup><hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="pick-op" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+import java.util.concurrent.ThreadLocalRandom
+def rnd = ThreadLocalRandom.current()
+def gp = { String k, String d -&gt; props.getProperty(k, d) }
+long rows = Long.parseLong(gp('oltp_rows', '1000000'))
+double skew = Double.parseDouble(gp('key_skew', '1.0'))      // 1 = uniform, &gt;1 = hot-spot
+int[] w = [gp('mix_read','60'), gp('mix_update','15'), gp('mix_insert','5'),
+           gp('mix_range','10'), gp('mix_tx','10')].collect { Integer.parseInt(it) } as int[]
+int roll = rnd.nextInt((int) w.sum()); int op = 0; int acc = 0
+for (int i = 0; i &lt; w.length; i++) { acc += w[i]; if (roll &lt; acc) { op = i; break } }
+def key = { 1L + (long) (rows * Math.pow(rnd.nextDouble(), skew)) }
+long seq = (vars.getObject('seq') ?: 0L) + 1L
+vars.putObject('seq', seq)
+long salt = Long.parseLong(gp('run_salt', '0'))
+vars.put('op', String.valueOf(op))
+vars.put('k', String.valueOf(key()))
+vars.put('k2', String.valueOf(key()))
+vars.put('cust', String.valueOf(1 + rnd.nextInt((int) Math.max(1L, rows.intdiv(10L)))))
+vars.put('delta', String.valueOf(1 + rnd.nextInt(100)))
+vars.put('newId', String.valueOf(rows + ((salt * 10000L + ctx.getThreadNum()) * 1000000L) + seq))
+vars.put('newCust', String.valueOf(1 + rnd.nextInt((int) Math.max(1L, rows.intdiv(10L)))))
+vars.put('payload', 'p' + Long.toHexString(rnd.nextLong()) + Long.toHexString(rnd.nextLong()))
+SampleResult.setIgnore()
+return 'op=' + op
+</stringProp></JSR223Sampler><hashTree></hashTree><SwitchController guiclass="SwitchControllerGui" testclass="SwitchController" testname="op-mix" enabled="true"><stringProp name="SwitchController.value">${op}</stringProp></SwitchController><hashTree><JDBCSampler guiclass="TestBeanGUI" testclass="JDBCSampler" testname="oltp.read" enabled="true"><stringProp name="dataSource">gg9</stringProp><stringProp name="queryType">Prepared Select Statement</stringProp><stringProp name="query">SELECT id, customer_id, balance, status, payload FROM accounts WHERE id = ?</stringProp><stringProp name="queryArguments">${k}</stringProp><stringProp name="queryArgumentsTypes">BIGINT</stringProp><stringProp name="variableNames"></stringProp><stringProp name="resultVariable"></stringProp><stringProp name="queryTimeout"></stringProp><stringProp name="resultSetMaxRows"></stringProp><stringProp name="resultSetHandler">Count Records</stringProp></JDBCSampler><hashTree></hashTree><JDBCSampler guiclass="TestBeanGUI" testclass="JDBCSampler" testname="oltp.update" enabled="true"><stringProp name="dataSource">gg9</stringProp><stringProp name="queryType">Prepared Update Statement</stringProp><stringProp name="query">UPDATE accounts SET balance = balance + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?</stringProp><stringProp name="queryArguments">${delta},${k}</stringProp><stringProp name="queryArgumentsTypes">INTEGER,BIGINT</stringProp><stringProp name="variableNames"></stringProp><stringProp name="resultVariable"></stringProp><stringProp name="queryTimeout"></stringProp><stringProp name="resultSetMaxRows"></stringProp><stringProp name="resultSetHandler">Count Records</stringProp></JDBCSampler><hashTree></hashTree><JDBCSampler guiclass="TestBeanGUI" testclass="JDBCSampler" testname="oltp.insert" enabled="true"><stringProp name="dataSource">gg9</stringProp><stringProp name="queryType">Prepared Update Statement</stringProp><stringProp name="query">INSERT INTO accounts (id, customer_id, balance, status, region, payload, updated_at) VALUES (?, ?, 0, 'ACTIVE', 'EU', ?, CURRENT_TIMESTAMP)</stringProp><stringProp name="queryArguments">${newId},${newCust},${payload}</stringProp><stringProp name="queryArgumentsTypes">BIGINT,INTEGER,VARCHAR</stringProp><stringProp name="variableNames"></stringProp><stringProp name="resultVariable"></stringProp><stringProp name="queryTimeout"></stringProp><stringProp name="resultSetMaxRows"></stringProp><stringProp name="resultSetHandler">Count Records</stringProp></JDBCSampler><hashTree></hashTree><JDBCSampler guiclass="TestBeanGUI" testclass="JDBCSampler" testname="oltp.range_by_customer" enabled="true"><stringProp name="dataSource">gg9</stringProp><stringProp name="queryType">Prepared Select Statement</stringProp><stringProp name="query">SELECT id, balance, status FROM accounts WHERE customer_id = ?</stringProp><stringProp name="queryArguments">${cust}</stringProp><stringProp name="queryArgumentsTypes">INTEGER</stringProp><stringProp name="variableNames"></stringProp><stringProp name="resultVariable"></stringProp><stringProp name="queryTimeout"></stringProp><stringProp name="resultSetMaxRows"></stringProp><stringProp name="resultSetHandler">Count Records</stringProp></JDBCSampler><hashTree></hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="oltp.tx_transfer" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+import org.apache.jmeter.protocol.jdbc.config.DataSourceElement
+long a = Long.parseLong(vars.get('k')); long b = Long.parseLong(vars.get('k2'))
+long d = Long.parseLong(vars.get('delta'))
+if (a == b) { b = a + 1 }
+def c = DataSourceElement.getConnection('gg9')
+try {
+  c.setAutoCommit(false)
+  def p1 = c.prepareStatement('UPDATE accounts SET balance = balance - ? WHERE id = ?')
+  p1.setLong(1, d); p1.setLong(2, a); p1.executeUpdate()
+  def p2 = c.prepareStatement('UPDATE accounts SET balance = balance + ? WHERE id = ?')
+  p2.setLong(1, d); p2.setLong(2, b); p2.executeUpdate()
+  c.commit()
+} catch (Throwable t) {
+  try { c.rollback() } catch (Throwable ignored) { }
+  throw t
+} finally {
+  try { c.setAutoCommit(true) } catch (Throwable ignored) { }
+  c.close()
+}
+return 'tx ok'
+</stringProp></JSR223Sampler><hashTree></hashTree></hashTree><ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="think-time" enabled="true"><stringProp name="ConstantTimer.delay">${__P(think_ms,0)}</stringProp></ConstantTimer><hashTree></hashTree></hashTree></hashTree></hashTree></jmeterTestPlan>
