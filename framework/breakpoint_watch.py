@@ -76,7 +76,7 @@ def main(jtl, profile, pid, out_dir):
             history.append(rec)
             if elapsed < grace or n < min_samples:
                 continue
-            bad = rec["err_pct"] >= err_lim or p95 >= p95_lim
+            bad = rec["err_pct"] >= err_lim or (p95_lim > 0 and p95 >= p95_lim)
             if bad:
                 breaches += 1
                 if breaches >= need:

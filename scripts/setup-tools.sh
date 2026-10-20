@@ -3,7 +3,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 JMETER_VERSION="${JMETER_VERSION:-5.6.3}"
-GG_VERSION="${GG_VERSION:-9.1.22}"
+[ -f "$ROOT/config/versions.env" ] && . "$ROOT/config/versions.env"
+GG_VERSION="${GG_VERSION:-9.1.27}"
 
 TOOLS="$ROOT/tools"
 mkdir -p "$TOOLS"
@@ -15,10 +16,14 @@ if [ ! -x "$TOOLS/apache-jmeter-$JMETER_VERSION/bin/jmeter" ]; then
 fi
 
 LIB="$TOOLS/apache-jmeter-$JMETER_VERSION/lib"
-if ! ls "$LIB"/ignite-client-*.jar >/dev/null 2>&1; then
-  echo ">> Resolving GridGain JDBC driver $GG_VERSION + dependencies (maven)"
-  rm -f "$LIB"/ignite-jdbc-*.jar
+MANIFEST="$TOOLS/gg-driver-jars.txt"
+if [ ! -f "$LIB/ignite-jdbc-$GG_VERSION.jar" ]; then
+  echo ">> Installing GridGain JDBC driver $GG_VERSION + dependencies (maven)"
+  # remove exactly what a previous driver install added
+  [ -f "$MANIFEST" ] && while read -r j; do rm -f "$LIB/$j"; done < "$MANIFEST"
+  ls "$LIB" | sort > "$TOOLS/.before"
   mvn -q -f "$ROOT/framework/deps/pom.xml" -Dgg.version="$GG_VERSION" dependency:copy-dependencies \
       -DoutputDirectory="$LIB" -DincludeScope=runtime -DexcludeGroupIds=org.slf4j,ch.qos.logback
+  ls "$LIB" | sort | comm -13 "$TOOLS/.before" - > "$MANIFEST"; rm -f "$TOOLS/.before"
 fi
-echo "JMeter home: $TOOLS/apache-jmeter-$JMETER_VERSION"
+echo "JMeter home: $TOOLS/apache-jmeter-$JMETER_VERSION  (GridGain driver $GG_VERSION)"

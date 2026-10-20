@@ -16,6 +16,7 @@ from workloads import WORKLOADS, POOL  # noqa: E402
 OUT = pathlib.Path(__file__).resolve().parent.parent / "plans"
 DRIVER = "org.apache.ignite.jdbc.IgniteJdbcDriver"
 URL = "${__P(jdbc_url,jdbc:ignite:thin://localhost:10800\\,localhost:10801\\,localhost:10802)}"
+URL += "?queryTimeoutSeconds=${__P(query_timeout_sec,0)}&connectionTimeoutMillis=${__P(connect_timeout_ms,0)}"
 LOAD_SCRIPT = """
 import java.util.concurrent.ThreadLocalRandom
 import org.apache.jmeter.protocol.jdbc.config.DataSourceElement
@@ -73,8 +74,9 @@ def schema_and_drop():
             if s not in seen:
                 seen.add(s)
                 create.append(s)
+    create.append("CREATE TABLE IF NOT EXISTS probe_kv (id BIGINT PRIMARY KEY, v VARCHAR(64)) ZONE PERF_ZONE")  # availability probe
     write("schema.jmx", ddl_plan("GG9 schema", create))
-    drops = [s for wl in WORKLOADS.values() for s in wl.drop]
+    drops = [s for wl in WORKLOADS.values() for s in wl.drop] + ["DROP TABLE IF EXISTS probe_kv"]
     write("drop.jmx", ddl_plan("GG9 drop", drops))
 
 

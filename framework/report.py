@@ -109,11 +109,12 @@ def chaos_analysis(run, per_sec, dur, t0_ms, warm=0):
     raw = json.load(open(path))["events"]
     t0 = t0_ms / 1000.0
     ev = [dict(e, t=round(e["t_epoch"] - t0, 1)) for e in raw]
+    unplanned = [e for e in ev if e["action"] == "unplanned-exit"]
     bad = [e for e in ev if e["action"] in ("stop", "kill", "pause") and e["ok"]]
     good = [e for e in ev if e["action"] in ("start", "unpause") and e["ok"]]
     ready = [e for e in ev if e["action"] == "ready" and e["ok"]]
     if not bad:
-        return dict(events=ev, phases=[], note="no disruptive event succeeded")
+        return dict(events=ev, phases=[], unplanned=unplanned, note="no disruptive event succeeded")
     first_bad = int(min(e["t"] for e in bad))
     last_back = int(max([e["t"] for e in ready] or [e["t"] for e in good] or [dur]))
 
@@ -156,9 +157,48 @@ def chaos_analysis(run, per_sec, dur, t0_ms, warm=0):
             last_bad = max([i for i, f in enumerate(flags) if not f], default=-1)
             recover = (last_bad + 1) * 5
         # else: still unhealthy at the end of the run -> None ("not recovered")
-    return dict(events=ev, phases=phases, first_fault_s=first_bad, last_ready_s=last_back,
+    return dict(events=ev, phases=phases, unplanned=unplanned, first_fault_s=first_bad, last_ready_s=last_back,
                 zero_success_seconds=dead, longest_outage_s=longest, recovery_time_s=recover,
                 rejoin_s=[dict(node=e["node"], note=e["note"]) for e in ready])
+
+
+def probe_analysis(run, t0_ms, dur, B, nb):
+    """Independent probe (fresh connection per probe, hard timeouts) -> per-target availability and gaps."""
+    rows = read_csv(os.path.join(run, "probe.csv"))
+    if not rows:
+        return None
+    t0 = t0_ms / 1000.0
+    by = collections.defaultdict(list)  # (target, op) -> [(t, ok, ms, err)]
+    for r in rows:
+        try:
+            by[(r["target"], r["op"])].append((int(r["ts_ms"]) / 1000.0 - t0, r["ok"] == "true", int(r["latency_ms"]), r["error"]))
+        except (ValueError, KeyError):
+            pass
+    targets = sorted({k[0] for k in by})
+    table, avail, maxlat = [], {}, {}
+    for tg in targets:
+        a, m = [[0, 0] for _ in range(nb)], [None] * nb
+        for op in ("read", "write"):
+            pts = sorted(by.get((tg, op), []))
+            if not pts:
+                continue
+            oks = [t for t, ok, _, _ in pts if ok]
+            edges = [0.0] + oks + [float(dur)]
+            gap = max(b - a_ for a_, b in zip(edges, edges[1:]))
+            errs = collections.Counter(e[:90] for _, ok, _, e in pts if not ok)
+            lat = sorted(ms for _, ok, ms, _ in pts if ok)
+            table.append(dict(target=tg, op=op, probes=len(pts), ok_pct=round(100.0 * len(oks) / len(pts), 2),
+                              longest_gap_s=round(gap, 1), p50_ms=lat[len(lat) // 2] if lat else None,
+                              p99_ms=lat[min(len(lat) - 1, int(len(lat) * .99))] if lat else None,
+                              top_error=errs.most_common(1)[0][0] if errs else ""))
+            for t, ok, ms, _ in pts:
+                i = min(nb - 1, max(0, int(t // B)))
+                a[i][0] += 1 if ok else 0
+                a[i][1] += 1
+                m[i] = max(m[i] or 0, ms)
+        avail[tg] = [round(100.0 * x / y, 1) if y else None for x, y in a]
+        maxlat[tg] = m
+    return dict(table=table, avail=avail, maxlat=maxlat)
 
 
 def build(run):
@@ -238,6 +278,7 @@ def build(run):
                 pass
 
     chaos = chaos_analysis(run, per_sec, dur, t0, warm)
+    probe = probe_analysis(run, t0, dur, B, len(xs))
     top_err = [dict(label=l, message=m, count=c) for (l, m), c in errors.most_common(15)]
     peak = max(series["tps"]) if series["tps"] else 0
     peak_at = series["threads"][series["tps"].index(peak)] if peak else 0
@@ -251,12 +292,12 @@ def build(run):
         env=env.get("env_name"), duration_s=dur, steady_window_s=steady_secs,
         overall=all_overall.stats(dur), steady=all_steady.stats(steady_secs),
         peak_tps=peak, threads_at_peak_tps=peak_at, breakpoint=bp, labels=label_rows,
-        top_errors=top_err, chaos=chaos)
+        top_errors=top_err, chaos=chaos, probe=probe["table"] if probe else None)
     if "ingest.batch" in label_rows:
         summary["ingest_rows_per_sec"] = round(label_rows["ingest.batch"]["tps"] * int(prof.get("ingest_batch", 500)), 1)
     data = dict(summary=summary, profile=prof, env=env, meta=meta, bucket_s=B, x=xs, series=series,
                 label_p95=per_label_p95, labels=labels, saturation=sat,
-                resources=aligned, chaos=chaos)
+                resources=aligned, chaos=chaos, probe=probe)
     return summary, data
 
 
@@ -325,7 +366,7 @@ function draw(id,spec){
   tip.style.display='block';tip.style.left=Math.min(r.width-170,Math.max(0,X(xs[bi])*r.width/W+12))+'px';tip.style.top='8px'});
  svg.addEventListener('mouseleave',()=>{tip.style.display='none';vl.style.display='none'});
 }
-const CH=(D.chaos&&D.chaos.events||[]).filter(e=>e.action!=='ready-timeout'||true).map((e,i)=>({t:e.t,n:i+1,kind:['stop','kill','pause'].includes(e.action)?'bad':(e.action==='ready'||e.action==='start'||e.action==='unpause')?'good':'x',label:e.action+' '+e.node}));
+const CH=(D.chaos&&D.chaos.events||[]).filter(e=>e.action!=='ready-timeout'||true).map((e,i)=>({t:e.t,n:i+1,kind:['stop','kill','pause','unplanned-exit'].includes(e.action)?'bad':(e.action==='ready'||e.action==='start'||e.action==='unpause')?'good':'x',label:e.action+' '+e.node}));
 function card(parent,id,spec,note){
  if(spec.xfmt===tfmt&&CH.length)spec.marks=CH;
  const el=document.createElement('section');el.className='card';
@@ -344,6 +385,9 @@ if(D.labels.length>1)card('charts','c-lab',{title:'p95 latency by operation',xla
 if(D.saturation.length){const sx=D.saturation.map(r=>r.threads);
  card('charts','c-sat',{title:'Throughput vs concurrency',xlabel:'threads',x:sx,unit:' ops/s',series:[{name:'ops/s',values:D.saturation.map(r=>r.tps)}]},'Saturation curve: the knee is where more users stop adding throughput.');
  card('charts','c-satl',{title:'p95 latency vs concurrency',xlabel:'threads',x:sx,unit:' ms',series:[{name:'p95',values:D.saturation.map(r=>r.p95_ms)}]},'Latency growth as concurrency rises.')}
+if(D.probe){const pk=Object.keys(D.probe.avail);
+ card('charts','c-pav',{title:'Probe: availability by endpoint',xlabel:'t',xfmt:tfmt,unit:'%',x:X,series:pk.map(k=>({name:k,values:D.probe.avail[k]}))},'Independent client, fresh connection per probe, hard timeout. Gaps = probes still hanging (no result recorded yet).');
+ card('charts','c-pla',{title:'Probe: worst latency by endpoint',xlabel:'t',xfmt:tfmt,unit:' ms',x:X,series:pk.map(k=>({name:k,values:D.probe.maxlat[k]}))},'Max probe latency per bucket (a timeout shows as the timeout value).')}
 const rk=Object.keys(D.resources).filter(k=>k!=='x');
 if(rk.length){const t=D.resources.x;
  card('charts','c-cpu',{title:'Node CPU',xlabel:'t',xfmt:tfmt,unit:'%',x:t,series:rk.slice(0,8).map(k=>({name:k,values:D.resources[k].map(r=>r[0])}))},'docker stats, % of one core (200% = 2 cores). Gaps = node down.');
@@ -398,11 +442,21 @@ def render(summary, data):
         kp2 = [(f'{ch.get("longest_outage_s", 0)}s', "longest full outage (no successful op)"),
                (f'{ch.get("zero_success_seconds", 0)}s', "seconds with zero successful ops"),
                ("not recovered" if rec is None else f"{rec}s", "until stable at >=90% of baseline (after node ready)")]
-        chaos_html = ('<h2>Fault injection</h2><div class="kpis">' + "".join(f'<div class="kpi"><b>{esc(a)}</b><span>{esc(b)}</span></div>' for a, b in kp2) +
+        un = ch.get("unplanned") or []
+        banner_un = "".join(f'<div class="banner bad"><strong>⚠ Unplanned node failure</strong> {esc(u["node"])} left the cluster at {esc(u["t"])}s without an injected fault. '
+                            'This run is no longer a single-fault experiment - check that node\'s logs.</div>' for u in un)
+        chaos_html = (banner_un + '<h2>Fault injection</h2><div class="kpis">' + "".join(f'<div class="kpi"><b>{esc(a)}</b><span>{esc(b)}</span></div>' for a, b in kp2) +
                       '</div><div class="card scroll" style="margin-top:12px"><table><tr><th>#</th><th>at</th><th style="text-align:left">event</th>'
                       f'<th style="text-align:left">result</th></tr>{ev_rows}</table><p style="margin-top:8px">Numbered markers on the charts below show these events '
                       '(red = fault, green = recovery).</p></div><div class="card scroll"><table><tr><th>phase</th><th>window</th><th>ops/s</th><th>errors</th>'
                       f'<th>p95 ms</th><th>p99 ms</th><th>failed ops</th></tr>{ph_rows}</table></div>')
+    probe_html = ""
+    if s.get("probe"):
+        pr = "".join(f'<tr><td>{esc(r["target"])}</td><td>{esc(r["op"])}</td><td>{r["probes"]:,}</td><td>{r["ok_pct"]}%</td><td>{r["longest_gap_s"]}s</td>'
+                     f'<td>{r["p50_ms"]}</td><td>{r["p99_ms"]}</td><td style="text-align:left;white-space:normal">{esc(r["top_error"])}</td></tr>' for r in s["probe"])
+        probe_html = ('<h2>Availability probe</h2><div class="card scroll"><p>Independent Java client, new connection per probe, 5s hard timeout. '
+                      '"Longest gap" = longest time with no successful probe of that kind.</p><table><tr><th>endpoint</th><th>op</th><th>probes</th><th>success</th>'
+                      f'<th>longest gap</th><th>p50 ms</th><th>p99 ms</th><th style="text-align:left">most common error</th></tr>{pr}</table></div>')
     when = ""
     if data["meta"].get("start_epoch"):
         when = datetime.datetime.fromtimestamp(data["meta"]["start_epoch"]).strftime("%Y-%m-%d %H:%M:%S")
@@ -410,12 +464,12 @@ def render(summary, data):
     return f"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>GG9 Perf Report</title><style>{CSS}</style></head><body><main>
 <h1>GridGain 9 performance report</h1>
-<p class="sub">{esc(s["workload"])} · {esc(s["mode"])} · env <b>{esc(s["env"])}</b> · {esc(when)} · run {esc(s["run"])}</p>
+<p class="sub">{esc(s["workload"])} · {esc(s["mode"])} · env <b>{esc(s["env"])}</b> · GridGain {esc(data["meta"].get("gridgain_version", "?"))} · {esc(when)} · run {esc(s["run"])}</p>
 {banner}<div class="kpis">{kpis}</div>
 <p class="sub" style="margin-top:8px">Stats cover the steady window ({s["steady_window_s"]}s of {s["duration_s"]}s; warm-up excluded in steady mode).</p>
 <h2>Operations</h2><div class="card scroll"><table><tr><th>operation</th><th>samples</th><th>ops/s</th><th>errors</th><th>avg ms</th>
 <th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr>{lab_rows}</table></div>
-{chaos_html}<h2>Over time</h2><div id="charts"></div>
+{chaos_html}{probe_html}<h2>Over time</h2><div id="charts"></div>
 <h2>Errors</h2><div class="card scroll"><table><tr><th>operation</th><th style="text-align:left">message</th><th>count</th></tr>{err_rows}</table></div>
 <h2>Configuration</h2><div class="card"><dl class="kv">{kv(data["env"])}</dl></div>
 <div class="card"><dl class="kv">{kv(prof)}</dl></div>

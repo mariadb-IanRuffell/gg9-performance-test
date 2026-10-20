@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from props import read_props
 
 lock = threading.Lock()
+DOWN = set()   # nodes we have deliberately taken down
 EVENTS = []
 READY_TIMEOUT = 600
 
@@ -52,9 +53,18 @@ class Docker:
         except Exception:
             return False
 
+    def status(self, node):
+        rc, out = sh(f"docker inspect -f '{{{{.State.Status}}}}' {self.name(node)}", 20)
+        return out if rc == 0 else "missing"
+
+    def ports_bound(self, node):
+        return bool(sh(f"docker port {self.name(node)} 10300", 20)[1].strip()) and sh(f"docker port {self.name(node)} 10300", 20)[0] == 0
+
     def restore(self, nodes):
         for n in nodes:
             sh(f"docker unpause {self.name(n)}"); sh(f"docker start {self.name(n)}")
+            if not self.ports_bound(n):          # Docker Desktop sometimes drops host port bindings after stop/start
+                sh(f"docker restart {self.name(n)}", 180)
 
 
 class Cmd:
@@ -70,6 +80,13 @@ class Cmd:
     def ready(self, node):
         t = self.env.get("chaos_cmd_ready")
         return bool(t) and sh(t.replace("{node}", node), 60)[0] == 0 if t else True
+
+    def status(self, node):
+        t = self.env.get("chaos_cmd_status")  # optional: must print running|stopped|paused
+        return sh(t.replace("{node}", node), 30)[1].strip() if t else "running"
+
+    def ports_bound(self, node):
+        return True
 
     def restore(self, nodes):
         for n in nodes:
@@ -101,11 +118,16 @@ def fire(drv, out_dir, t_start, offset, action, node, alive):
     todo = ["stop", "start"] if action == "restart" else [action]
     for a in todo:
         t = time.time()
+        if a in ("stop", "kill", "pause"):
+            with lock:
+                DOWN.add(node)
         rc, msg = drv.run(a, node)
         ev = dict(t_epoch=t, planned_offset=offset, action=a, node=node, ok=rc == 0, note=msg[:200])
         print(f"[chaos] +{t - t_start:6.1f}s {a} {node} -> {'ok' if rc == 0 else 'FAILED: ' + msg[:100]}", flush=True)
         record(out_dir, **ev)
         if a in ("start", "unpause") and rc == 0:
+            with lock:
+                DOWN.discard(node)
             t_back = None
             deadline = time.time() + READY_TIMEOUT
             while time.time() < deadline:
@@ -117,6 +139,40 @@ def fire(drv, out_dir, t_start, offset, action, node, alive):
             print(f"[chaos] {node} {'ready after %.1fs' % (t_back - t) if t_back else 'NOT READY'}", flush=True)
         if a == "stop" and action == "restart":
             time.sleep(float(os.environ.get("CHAOS_RESTART_GAP", 10)))
+
+
+def preflight(env):
+    """Refuse to start a chaos run on an unhealthy cluster (a node already down invalidates the experiment)."""
+    drv = Docker(env) if env.get("chaos_driver", "docker") == "docker" else Cmd(env)
+    nodes = [n.strip() for n in env.get("chaos_nodes", "").split(",") if n.strip()]
+    bad = []
+    for n in nodes:
+        st = drv.status(n)
+        ok = st == "running" and drv.ports_bound(n) and drv.ready(n)
+        print(f"[preflight] {n}: status={st} ports={'ok' if drv.ports_bound(n) else 'MISSING'} ready={'yes' if ok else 'NO'}")
+        if not ok:
+            bad.append(n)
+    if bad:
+        print(f"[preflight] FAILED: {', '.join(bad)} not healthy. Fix the cluster (docker restart / cluster-up.sh) and retry.")
+        sys.exit(1)
+
+
+def watch_unplanned(drv, nodes, out_dir, down, alive):
+    """Record nodes that leave 'running' without us asking (e.g. a node stopped itself after a critical failure)."""
+    seen = set()
+    while alive():
+        for n in nodes:
+            st = drv.status(n)
+            with lock:
+                expected = n in down
+            if st != "running" and not expected and n not in seen:
+                seen.add(n)
+                print(f"[chaos] UNPLANNED: {n} is {st}", flush=True)
+                record(out_dir, t_epoch=time.time(), planned_offset=-1, action="unplanned-exit", node=n, ok=False,
+                       note=f"node became '{st}' without an injected fault - check its logs")
+            elif st == "running":
+                seen.discard(n)
+        time.sleep(2)
 
 
 def main(out_dir, profile, envf, pid):
@@ -137,6 +193,8 @@ def main(out_dir, profile, envf, pid):
     while alive() and not (os.path.exists(jtl) and sum(1 for _ in open(jtl)) > 1):
         time.sleep(1)
     t_start = time.time()
+    nodes = [n.strip() for n in env.get("chaos_nodes", "").split(",") if n.strip()] or sorted({n for _, _, n in events})
+    threading.Thread(target=watch_unplanned, args=(drv, nodes, out_dir, DOWN, alive), daemon=True).start()
     threads = [threading.Thread(target=fire, args=(drv, out_dir, t_start, o, a, n, alive), daemon=True) for o, a, n in events]
     for t in threads:
         t.start()
@@ -149,4 +207,7 @@ def main(out_dir, profile, envf, pid):
 
 
 if __name__ == "__main__":
+    if sys.argv[1] == "--preflight":
+        preflight(read_props(sys.argv[2]))
+        sys.exit(0)
     main(sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4]))

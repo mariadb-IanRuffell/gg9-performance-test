@@ -16,3 +16,6 @@ chaos_cmd_unpause=ssh {node}.internal 'sudo pkill -CONT -f gridgain'
 # exit 0 when the node is back: here, REST says STARTED
 chaos_cmd_ready=curl -sf http://{node}.internal:10300/management/v1/node/state | grep -q STARTED
 # Kubernetes alternative: chaos_cmd_stop=kubectl delete pod {node} --grace-period=30 ; chaos_cmd_kill=kubectl delete pod {node} --grace-period=0 --force
+chaos_nodes=node1,node2,node3
+# optional: prints running|stopped|paused, used to detect nodes that die on their own
+# chaos_cmd_status=ssh {node}.internal 'systemctl is-active gridgain9 | sed s/^active/running/'

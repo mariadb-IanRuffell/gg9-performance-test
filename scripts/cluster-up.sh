@@ -2,6 +2,7 @@
 # Start the local 3-node cluster and initialise it. License: GG_LICENSE_FILE (default ./gridgain-license.json).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+[ -f "$ROOT/config/versions.env" ] && set -a && . "$ROOT/config/versions.env" && set +a
 [ -f "$ROOT/config/local.env" ] && set -a && . "$ROOT/config/local.env" && set +a
 LICENSE_FILE="${GG_LICENSE_FILE:-$ROOT/gridgain-license.json}"
 REST="http://localhost:10300"
@@ -22,4 +23,7 @@ else
 fi
 curl -sf -X POST "$REST/management/v1/cluster/init" -H 'Content-Type: application/json' -d "$BODY}" && echo ">> init sent"
 until curl -sf "$REST/management/v1/cluster/state" >/dev/null 2>&1; do sleep 2; done
-echo ">> cluster ready: $(curl -s $REST/management/v1/cluster/state)"
+for port in 10300 10301 10302; do
+  until curl -s "http://localhost:$port/management/v1/node/state" | grep -q STARTED; do sleep 2; done
+done
+echo ">> cluster ready (GridGain $GG_VERSION): $(curl -s $REST/management/v1/cluster/state)"
