@@ -1,0 +1,195 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3"><hashTree><TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="GG9 run analytical (per-thread connections)" enabled="true"><boolProp name="TestPlan.functional_mode">false</boolProp><boolProp name="TestPlan.serialize_threadgroups">true</boolProp><elementProp name="TestPlan.user_defined_variables" elementType="Arguments" guiclass="ArgumentsPanel" testclass="Arguments" testname="User Defined Variables" enabled="true"><collectionProp name="Arguments.arguments"></collectionProp></elementProp></TestPlan><hashTree><ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="workload" enabled="true"><stringProp name="ThreadGroup.on_sample_error">continue</stringProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true"><boolProp name="LoopController.continue_forever">false</boolProp><stringProp name="LoopController.loops">-1</stringProp></elementProp><stringProp name="ThreadGroup.num_threads">${__P(threads,32)}</stringProp><stringProp name="ThreadGroup.ramp_time">${__P(rampup,60)}</stringProp><boolProp name="ThreadGroup.scheduler">true</boolProp><stringProp name="ThreadGroup.duration">${__P(duration,600)}</stringProp><stringProp name="ThreadGroup.delay">${__P(startup_delay,0)}</stringProp><boolProp name="ThreadGroup.same_user_on_next_iteration">true</boolProp></ThreadGroup><hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="pick-op" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+import java.util.concurrent.ThreadLocalRandom
+def rnd = ThreadLocalRandom.current()
+def gp = { String k, String d -&gt; props.getProperty(k, d) }
+long orders = Long.parseLong(gp('olap_orders', '2000000'))
+int[] w = [gp('mix_agg','30'), gp('mix_join','30'), gp('mix_topn','10'),
+           gp('mix_lookup','25'), gp('mix_distinct','5')].collect { Integer.parseInt(it) } as int[]
+int roll = rnd.nextInt((int) w.sum()); int op = 0; int acc = 0
+for (int i = 0; i &lt; w.length; i++) { acc += w[i]; if (roll &lt; acc) { op = i; break } }
+int span = Integer.parseInt(gp('olap_window_days', '30'))
+int from = rnd.nextInt(365 - span)
+vars.put('op', String.valueOf(op))
+vars.put('dayFrom', String.valueOf(from))
+vars.put('dayTo', String.valueOf(from + span))
+vars.put('cust', String.valueOf(1 + rnd.nextInt((int) Math.max(1L, orders.intdiv(20L)))))
+SampleResult.setIgnore()
+return 'op=' + op
+</stringProp></JSR223Sampler><hashTree></hashTree><SwitchController guiclass="SwitchControllerGui" testclass="SwitchController" testname="op-mix" enabled="true"><stringProp name="SwitchController.value">${op}</stringProp></SwitchController><hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="olap.agg_by_region" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+
+import java.sql.*
+def jdbcUrl = props.getProperty('jdbc_url', 'jdbc:ignite:thin://localhost:10800,localhost:10801,localhost:10802') +
+    '?queryTimeoutSeconds=' + props.getProperty('query_timeout_sec', '0') + '&amp;connectionTimeoutMillis=' + props.getProperty('connect_timeout_ms', '0')
+// one connection per virtual user, opened lazily (so a ramp opens connections gradually) and replaced after any failure
+def getConn = {
+  def c = vars.getObject('conn')
+  if (c == null || c.isClosed()) {
+    c = DriverManager.getConnection(jdbcUrl); vars.putObject('conn', c)
+    def reg = props.get('gg9.conns')
+    if (reg == null) { props.putIfAbsent('gg9.conns', new java.util.concurrent.ConcurrentLinkedQueue()); reg = props.get('gg9.conns') }
+    reg.add(c)
+  }
+  return c
+}
+def discardConn = { def c = vars.getObject('conn'); vars.putObject('conn', null); try { c?.close() } catch (Throwable ignored) { }
+  try { props.get('gg9.conns')?.remove(c) } catch (Throwable ignored) { } }
+def release = { c -&gt; }
+try {
+def c = getConn()
+def ps = c.prepareStatement('''SELECT region, COUNT(*) c, SUM(amount) s FROM orders WHERE order_day BETWEEN ? AND ? GROUP BY region''')
+try {
+    ps.setInt(1, Integer.parseInt(vars.get('dayFrom')))
+    ps.setInt(2, Integer.parseInt(vars.get('dayTo')))
+    int n = 0
+    def rs = ps.executeQuery()
+    try { while (rs.next()) { n++ } } finally { rs.close() }
+    return 'rows ' + n
+} finally { ps.close() }
+
+} catch (Throwable t) {
+  discardConn()
+  throw t
+}
+</stringProp></JSR223Sampler><hashTree></hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="olap.join_segment_category" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+
+import java.sql.*
+def jdbcUrl = props.getProperty('jdbc_url', 'jdbc:ignite:thin://localhost:10800,localhost:10801,localhost:10802') +
+    '?queryTimeoutSeconds=' + props.getProperty('query_timeout_sec', '0') + '&amp;connectionTimeoutMillis=' + props.getProperty('connect_timeout_ms', '0')
+// one connection per virtual user, opened lazily (so a ramp opens connections gradually) and replaced after any failure
+def getConn = {
+  def c = vars.getObject('conn')
+  if (c == null || c.isClosed()) {
+    c = DriverManager.getConnection(jdbcUrl); vars.putObject('conn', c)
+    def reg = props.get('gg9.conns')
+    if (reg == null) { props.putIfAbsent('gg9.conns', new java.util.concurrent.ConcurrentLinkedQueue()); reg = props.get('gg9.conns') }
+    reg.add(c)
+  }
+  return c
+}
+def discardConn = { def c = vars.getObject('conn'); vars.putObject('conn', null); try { c?.close() } catch (Throwable ignored) { }
+  try { props.get('gg9.conns')?.remove(c) } catch (Throwable ignored) { } }
+def release = { c -&gt; }
+try {
+def c = getConn()
+def ps = c.prepareStatement('''SELECT c.segment, p.category, SUM(o.amount) s FROM orders o JOIN customers c ON o.customer_id = c.id JOIN products p ON o.product_id = p.id WHERE o.order_day BETWEEN ? AND ? GROUP BY c.segment, p.category''')
+try {
+    ps.setInt(1, Integer.parseInt(vars.get('dayFrom')))
+    ps.setInt(2, Integer.parseInt(vars.get('dayTo')))
+    int n = 0
+    def rs = ps.executeQuery()
+    try { while (rs.next()) { n++ } } finally { rs.close() }
+    return 'rows ' + n
+} finally { ps.close() }
+
+} catch (Throwable t) {
+  discardConn()
+  throw t
+}
+</stringProp></JSR223Sampler><hashTree></hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="olap.topn_customers" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+
+import java.sql.*
+def jdbcUrl = props.getProperty('jdbc_url', 'jdbc:ignite:thin://localhost:10800,localhost:10801,localhost:10802') +
+    '?queryTimeoutSeconds=' + props.getProperty('query_timeout_sec', '0') + '&amp;connectionTimeoutMillis=' + props.getProperty('connect_timeout_ms', '0')
+// one connection per virtual user, opened lazily (so a ramp opens connections gradually) and replaced after any failure
+def getConn = {
+  def c = vars.getObject('conn')
+  if (c == null || c.isClosed()) {
+    c = DriverManager.getConnection(jdbcUrl); vars.putObject('conn', c)
+    def reg = props.get('gg9.conns')
+    if (reg == null) { props.putIfAbsent('gg9.conns', new java.util.concurrent.ConcurrentLinkedQueue()); reg = props.get('gg9.conns') }
+    reg.add(c)
+  }
+  return c
+}
+def discardConn = { def c = vars.getObject('conn'); vars.putObject('conn', null); try { c?.close() } catch (Throwable ignored) { }
+  try { props.get('gg9.conns')?.remove(c) } catch (Throwable ignored) { } }
+def release = { c -&gt; }
+try {
+def c = getConn()
+def ps = c.prepareStatement('''SELECT customer_id, SUM(amount) s FROM orders GROUP BY customer_id ORDER BY s DESC LIMIT 10''')
+try {
+    int n = 0
+    def rs = ps.executeQuery()
+    try { while (rs.next()) { n++ } } finally { rs.close() }
+    return 'rows ' + n
+} finally { ps.close() }
+
+} catch (Throwable t) {
+  discardConn()
+  throw t
+}
+</stringProp></JSR223Sampler><hashTree></hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="olap.customer_history" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+
+import java.sql.*
+def jdbcUrl = props.getProperty('jdbc_url', 'jdbc:ignite:thin://localhost:10800,localhost:10801,localhost:10802') +
+    '?queryTimeoutSeconds=' + props.getProperty('query_timeout_sec', '0') + '&amp;connectionTimeoutMillis=' + props.getProperty('connect_timeout_ms', '0')
+// one connection per virtual user, opened lazily (so a ramp opens connections gradually) and replaced after any failure
+def getConn = {
+  def c = vars.getObject('conn')
+  if (c == null || c.isClosed()) {
+    c = DriverManager.getConnection(jdbcUrl); vars.putObject('conn', c)
+    def reg = props.get('gg9.conns')
+    if (reg == null) { props.putIfAbsent('gg9.conns', new java.util.concurrent.ConcurrentLinkedQueue()); reg = props.get('gg9.conns') }
+    reg.add(c)
+  }
+  return c
+}
+def discardConn = { def c = vars.getObject('conn'); vars.putObject('conn', null); try { c?.close() } catch (Throwable ignored) { }
+  try { props.get('gg9.conns')?.remove(c) } catch (Throwable ignored) { } }
+def release = { c -&gt; }
+try {
+def c = getConn()
+def ps = c.prepareStatement('''SELECT id, amount, order_day, status FROM orders WHERE customer_id = ? ORDER BY order_day DESC LIMIT 50''')
+try {
+    ps.setLong(1, Long.parseLong(vars.get('cust')))
+    int n = 0
+    def rs = ps.executeQuery()
+    try { while (rs.next()) { n++ } } finally { rs.close() }
+    return 'rows ' + n
+} finally { ps.close() }
+
+} catch (Throwable t) {
+  discardConn()
+  throw t
+}
+</stringProp></JSR223Sampler><hashTree></hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="olap.count_distinct" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+
+import java.sql.*
+def jdbcUrl = props.getProperty('jdbc_url', 'jdbc:ignite:thin://localhost:10800,localhost:10801,localhost:10802') +
+    '?queryTimeoutSeconds=' + props.getProperty('query_timeout_sec', '0') + '&amp;connectionTimeoutMillis=' + props.getProperty('connect_timeout_ms', '0')
+// one connection per virtual user, opened lazily (so a ramp opens connections gradually) and replaced after any failure
+def getConn = {
+  def c = vars.getObject('conn')
+  if (c == null || c.isClosed()) {
+    c = DriverManager.getConnection(jdbcUrl); vars.putObject('conn', c)
+    def reg = props.get('gg9.conns')
+    if (reg == null) { props.putIfAbsent('gg9.conns', new java.util.concurrent.ConcurrentLinkedQueue()); reg = props.get('gg9.conns') }
+    reg.add(c)
+  }
+  return c
+}
+def discardConn = { def c = vars.getObject('conn'); vars.putObject('conn', null); try { c?.close() } catch (Throwable ignored) { }
+  try { props.get('gg9.conns')?.remove(c) } catch (Throwable ignored) { } }
+def release = { c -&gt; }
+try {
+def c = getConn()
+def ps = c.prepareStatement('''SELECT COUNT(DISTINCT customer_id) FROM orders WHERE order_day BETWEEN ? AND ?''')
+try {
+    ps.setInt(1, Integer.parseInt(vars.get('dayFrom')))
+    ps.setInt(2, Integer.parseInt(vars.get('dayTo')))
+    int n = 0
+    def rs = ps.executeQuery()
+    try { while (rs.next()) { n++ } } finally { rs.close() }
+    return 'rows ' + n
+} finally { ps.close() }
+
+} catch (Throwable t) {
+  discardConn()
+  throw t
+}
+</stringProp></JSR223Sampler><hashTree></hashTree></hashTree><ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="think-time" enabled="true"><stringProp name="ConstantTimer.delay">${__P(think_ms,0)}</stringProp></ConstantTimer><hashTree></hashTree></hashTree><PostThreadGroup guiclass="PostThreadGroupGui" testclass="PostThreadGroup" testname="close connections" enabled="true"><stringProp name="ThreadGroup.on_sample_error">continue</stringProp><elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true"><boolProp name="LoopController.continue_forever">false</boolProp><stringProp name="LoopController.loops">1</stringProp></elementProp><stringProp name="ThreadGroup.num_threads">1</stringProp><stringProp name="ThreadGroup.ramp_time">1</stringProp><boolProp name="ThreadGroup.scheduler">false</boolProp><stringProp name="ThreadGroup.duration"></stringProp><stringProp name="ThreadGroup.delay"></stringProp></PostThreadGroup><hashTree><JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="teardown.close_connections" enabled="true"><stringProp name="scriptLanguage">groovy</stringProp><stringProp name="parameters"></stringProp><stringProp name="filename"></stringProp><stringProp name="cacheKey">true</stringProp><stringProp name="script">
+def reg = props.get('gg9.conns'); int n = 0
+if (reg != null) { def c; while ((c = reg.poll()) != null) { try { c.close(); n++ } catch (Throwable ignored) { } } }
+return 'closed ' + n
+</stringProp></JSR223Sampler><hashTree></hashTree></hashTree></hashTree></hashTree></jmeterTestPlan>

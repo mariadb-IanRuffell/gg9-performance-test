@@ -110,6 +110,18 @@ def jsr223_sampler(name, script, params=""):
     return _jsr223("JSR223Sampler", "TestBeanGUI", "JSR223Sampler", name, script, params)
 
 
+def teardown_thread_group(name):
+    ctrl = ('<elementProp name="ThreadGroup.main_controller" elementType="LoopController" '
+            'guiclass="LoopControlPanel" testclass="LoopController" testname="Loop Controller" enabled="true">'
+            f'{_p("boolProp", "LoopController.continue_forever", False)}'
+            f'{_p("stringProp", "LoopController.loops", "1")}</elementProp>')
+    return Node(_el("PostThreadGroup", "PostThreadGroupGui", "PostThreadGroup", name, [
+        _p("stringProp", "ThreadGroup.on_sample_error", "continue"), ctrl,
+        _p("stringProp", "ThreadGroup.num_threads", "1"), _p("stringProp", "ThreadGroup.ramp_time", "1"),
+        _p("boolProp", "ThreadGroup.scheduler", False), _p("stringProp", "ThreadGroup.duration", ""),
+        _p("stringProp", "ThreadGroup.delay", "")]))
+
+
 def switch_controller(name, value):
     return Node(_el("SwitchController", "SwitchControllerGui", "SwitchController", name,
                     [_p("stringProp", "SwitchController.value", value)]))

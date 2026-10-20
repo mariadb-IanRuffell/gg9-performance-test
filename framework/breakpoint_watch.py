@@ -35,6 +35,7 @@ def main(jtl, profile, pid, out_dir):
     need = int(p.get("stop_consecutive", 3))
     min_samples = int(p.get("stop_min_samples", 20))
     port = int(p.get("jmeterengine.nongui.port", 4445))
+    stall = float(p.get("stop_stall_sec", 90))   # no completed samples at all for this long => the system (or client) is wedged
     grace = float(p.get("stop_grace_sec", 30))  # ignore the first seconds (pool/JIT warm-up)
 
     while not os.path.exists(jtl) and alive(pid):
@@ -44,9 +45,12 @@ def main(jtl, profile, pid, out_dir):
     breaches, last_good, history = 0, None, []
     next_eval = time.time() + win
     partial = ""
+    last_sample = time.time()
+    started = time.time()
     while alive(pid):
         chunk = f.read()
         if chunk:
+            last_sample = time.time()
             partial += chunk
             *lines, partial = partial.split("\n")
             for row in csv.reader(lines):
@@ -61,6 +65,18 @@ def main(jtl, profile, pid, out_dir):
                                 int(row[header["allThreads"]])))
                 except (ValueError, IndexError, KeyError):
                     pass
+        if time.time() - last_sample > stall and time.time() - started > grace:
+            threads = history[-1]["threads"] if history else 0
+            bp = dict(detected_at_s=round(time.time() - started, 1), threads_at_breach=threads, kind="stall",
+                      reason="no completed operations for %d s (stall)" % stall, last_good=last_good, windows=history[-6:],
+                      criteria=dict(stop_stall_sec=stall))
+            with open(os.path.join(out_dir, "breakpoint.json"), "w") as o:
+                json.dump(bp, o, indent=2)
+            print("BREAKPOINT (stall) at", threads, "threads", flush=True)
+            for _ in range(3):
+                socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"StopTestNow", ("127.0.0.1", port))
+                time.sleep(5)
+            return
         if time.time() >= next_eval and buf:
             next_eval = time.time() + win
             if t0 is None:

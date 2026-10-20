@@ -5,7 +5,7 @@
 # threads x2 and rampup x2 (fresh cluster each time) up to MAX_ESCALATIONS times.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-ENV_NAME="${SUITE_ENV:-local}"; MAX_ESCALATIONS="${MAX_ESCALATIONS:-3}"; MAX_THREADS="${MAX_THREADS:-8000}"
+ENV_NAME="${SUITE_ENV:-local}"; MAX_ESCALATIONS="${MAX_ESCALATIONS:-3}"; MAX_THREADS="${MAX_THREADS:-1400}"   # one JMeter on this Mac tops out near 1400 connected threads (native-thread limit)
 [ -f "$ROOT/config/versions.env" ] && . "$ROOT/config/versions.env"
 export GG_VERSION JMETER_HEAP="${JMETER_HEAP:-8g}"
 DEFAULT=(oltp-steady analytical-steady ingest-steady oltp-ramp analytical-ramp ingest-ramp
@@ -14,7 +14,7 @@ DEFAULT=(oltp-steady analytical-steady ingest-steady oltp-ramp analytical-ramp i
 PROFILES=("$@"); [ ${#PROFILES[@]} -eq 0 ] && PROFILES=("${DEFAULT[@]}")
 SUITE="$ROOT/results/suite-$(date +%Y%m%d-%H%M%S)-gg$GG_VERSION"; mkdir -p "$SUITE"
 TSV="$SUITE/summary.tsv"; printf 'profile\tattempt\tstatus\trun_dir\tnote\n' > "$TSV"
-prop() { grep -E "^$1=" "$2" | tail -1 | cut -d= -f2-; }
+prop() { { grep -E "^$1=" "$2" || true; } | tail -1 | cut -d= -f2-; }
 log() { echo "[$(date +%H:%M:%S)] $*" | tee -a "$SUITE/suite.log"; }
 
 fresh_cluster() {   # $1 = workload, $2 = profile (sizing)

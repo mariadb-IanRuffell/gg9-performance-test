@@ -7,6 +7,7 @@
   plans/run-<wl>.jmx       the measured workload (steady-state AND ramp-to-failure; shaped by properties)
 """
 import pathlib
+import re
 import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
@@ -92,9 +93,59 @@ def load_plan(wl):
     write(f"load-{wl.key}.jmx", tp)
 
 
-def run_plan(wl):
-    tp = base_plan(f"GG9 run {wl.key}")
-    tp.add(pool("${__intSum(${__P(threads,32)},8)}"))
+TC_PRELUDE = """
+import java.sql.*
+def jdbcUrl = props.getProperty('jdbc_url', 'jdbc:ignite:thin://localhost:10800,localhost:10801,localhost:10802') +
+    '?queryTimeoutSeconds=' + props.getProperty('query_timeout_sec', '0') + '&connectionTimeoutMillis=' + props.getProperty('connect_timeout_ms', '0')
+// one connection per virtual user, opened lazily (so a ramp opens connections gradually) and replaced after any failure
+def getConn = {
+  def c = vars.getObject('conn')
+  if (c == null || c.isClosed()) {
+    c = DriverManager.getConnection(jdbcUrl); vars.putObject('conn', c)
+    def reg = props.get('gg9.conns')
+    if (reg == null) { props.putIfAbsent('gg9.conns', new java.util.concurrent.ConcurrentLinkedQueue()); reg = props.get('gg9.conns') }
+    reg.add(c)
+  }
+  return c
+}
+def discardConn = { def c = vars.getObject('conn'); vars.putObject('conn', null); try { c?.close() } catch (Throwable ignored) { }
+  try { props.get('gg9.conns')?.remove(c) } catch (Throwable ignored) { } }
+def release = { c -> }
+"""
+TYPE_SETTERS = {"BIGINT": "setLong(%d, Long.parseLong(%s))", "INTEGER": "setInt(%d, Integer.parseInt(%s))",
+                "VARCHAR": "setString(%d, %s)"}
+
+
+CLOSE_ALL = """
+def reg = props.get('gg9.conns'); int n = 0
+if (reg != null) { def c; while ((c = reg.poll()) != null) { try { c.close(); n++ } catch (Throwable ignored) { } } }
+return 'closed ' + n
+"""
+
+
+def tc_script(op):
+    """Groovy version of an op that uses the per-thread connection instead of JMeter's pool."""
+    if op.kind == "jdbc":
+        names = re.findall(r"\$\{(\w+)\}", op.args)
+        types = [t.strip() for t in op.types.split(",") if t.strip()]
+        sets = "".join("    ps.%s\n" % (TYPE_SETTERS[t] % (i + 1, "vars.get('%s')" % n)) for i, (n, t) in enumerate(zip(names, types)))
+        read = "Select" in op.qtype
+        body = ("def c = getConn()\ndef ps = c.prepareStatement('''" + op.sql + "''')\ntry {\n" + sets +
+                ("    int n = 0\n    def rs = ps.executeQuery()\n    try { while (rs.next()) { n++ } } finally { rs.close() }\n" if read
+                 else "    int n = ps.executeUpdate()\n") + "    return 'rows ' + n\n} finally { ps.close() }\n")
+        hoisted = ""
+    else:
+        lines = op.script.splitlines()
+        hoisted = "\n".join(l for l in lines if l.strip().startswith("import "))
+        body = "\n".join(l for l in lines if not l.strip().startswith("import ")) \
+            .replace("DataSourceElement.getConnection('gg9')", "getConn()").replace("c.close()", "release(c)")
+    return hoisted + "\n" + TC_PRELUDE + "try {\n" + body + "\n} catch (Throwable t) {\n  discardConn()\n  throw t\n}\n"
+
+
+def run_plan(wl, thread_conn=False):
+    tp = base_plan(f"GG9 run {wl.key}" + (" (per-thread connections)" if thread_conn else ""))
+    if not thread_conn:
+        tp.add(pool("${__intSum(${__P(threads,32)},8)}"))
     # threads/rampup/duration come from properties: steady-state => ramp is short, threads fixed;
     # ramp-to-failure => threads = ceiling, rampup = long, a watcher stops the run at the breakpoint.
     tg = jmx.thread_group("workload", "${__P(threads,32)}", "${__P(rampup,60)}",
@@ -102,14 +153,20 @@ def run_plan(wl):
     tg.add(jmx.jsr223_sampler("pick-op", wl.pick_script))
     sw = jmx.switch_controller("op-mix", "${op}")
     for op in wl.ops:
-        if op.kind == "jdbc":
+        if thread_conn:
+            sw.add(jmx.jsr223_sampler(op.name, tc_script(op)))
+        elif op.kind == "jdbc":
             sw.add(jmx.jdbc_sampler(op.name, POOL, op.sql, qtype=op.qtype, args=op.args, types=op.types))
         else:
             sw.add(jmx.jsr223_sampler(op.name, op.script))
     tg.add(sw)
     tg.add(jmx.constant_timer("think-time", "${__P(think_ms,0)}"))
     tp.add(tg)
-    write(f"run-{wl.key}.jmx", tp)
+    if thread_conn:
+        td = jmx.teardown_thread_group("close connections")
+        td.add(jmx.jsr223_sampler("teardown.close_connections", CLOSE_ALL))
+        tp.add(td)
+    write(f"run-{wl.key}{'-tc' if thread_conn else ''}.jmx", tp)
 
 
 if __name__ == "__main__":
@@ -118,3 +175,4 @@ if __name__ == "__main__":
         if w.loaders:
             load_plan(w)
         run_plan(w)
+        run_plan(w, thread_conn=True)

@@ -76,6 +76,8 @@ def load(run):
         rows = []
         for r in rd:
             try:
+                if r["label"].startswith("teardown."):
+                    continue
                 rows.append((int(r["timeStamp"]), r["label"], int(r["elapsed"]), r["success"] == "true",
                              int(r.get("allThreads") or 0), int(r.get("bytes") or 0),
                              r.get("responseMessage", ""), r.get("failureMessage", "")))
