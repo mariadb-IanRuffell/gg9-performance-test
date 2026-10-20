@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 JMETER_VERSION="${JMETER_VERSION:-5.6.3}"
 [ -f "$ROOT/config/versions.env" ] && . "$ROOT/config/versions.env"
-GG_VERSION="${GG_VERSION:-9.1.27}"
+GG_VERSION="${GG_VERSION:-9.1.28}"
 
 TOOLS="$ROOT/tools"
 mkdir -p "$TOOLS"

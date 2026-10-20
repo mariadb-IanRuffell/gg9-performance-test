@@ -1,4 +1,4 @@
-# GridGain 9.1.22 performance test framework
+# GridGain 9.1 performance test framework (version set in config/versions.env)
 
 JMeter-based, JDBC-driven. Two test shapes over three workloads, with an HTML report per run.
 
