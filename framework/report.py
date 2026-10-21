@@ -281,6 +281,8 @@ def build(run):
 
     chaos = chaos_analysis(run, per_sec, dur, t0, warm)
     probe = probe_analysis(run, t0, dur, B, len(xs))
+    nl_path = os.path.join(run, "node-logs", "summary.json")
+    nodelogs = json.load(open(nl_path)) if os.path.exists(nl_path) else None
     top_err = [dict(label=l, message=m, count=c) for (l, m), c in errors.most_common(15)]
     peak = max(series["tps"]) if series["tps"] else 0
     peak_at = series["threads"][series["tps"].index(peak)] if peak else 0
@@ -294,12 +296,13 @@ def build(run):
         env=env.get("env_name"), duration_s=dur, steady_window_s=steady_secs,
         overall=all_overall.stats(dur), steady=all_steady.stats(steady_secs),
         peak_tps=peak, threads_at_peak_tps=peak_at, breakpoint=bp, labels=label_rows,
-        top_errors=top_err, chaos=chaos, probe=probe["table"] if probe else None)
+        top_errors=top_err, chaos=chaos, probe=probe["table"] if probe else None,
+        node_logs=(dict(collected=nodelogs["collected"], reasons=nodelogs["reasons"]) if nodelogs else None))
     if "ingest.batch" in label_rows:
         summary["ingest_rows_per_sec"] = round(label_rows["ingest.batch"]["tps"] * int(prof.get("ingest_batch", 500)), 1)
     data = dict(summary=summary, profile=prof, env=env, meta=meta, bucket_s=B, x=xs, series=series,
                 label_p95=per_label_p95, labels=labels, saturation=sat,
-                resources=aligned, chaos=chaos, probe=probe)
+                resources=aligned, chaos=chaos, probe=probe, nodelogs=nodelogs, t0_epoch=t0 / 1000.0)
     return summary, data
 
 
@@ -333,6 +336,14 @@ th{color:var(--muted);font-weight:600;font-size:12px}.scroll{overflow-x:auto}
 .banner.bad{border-color:var(--bad)}.banner.good{border-color:var(--good)}.banner strong{display:inline-block;margin-right:6px}
 details{margin-top:8px;color:var(--ink2)}details summary{cursor:pointer;font-size:12px}
 .kv{display:grid;grid-template-columns:max-content 1fr;gap:2px 16px;font-size:13px}.kv dt{color:var(--muted)}.kv dd{margin:0}
+.logbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:8px 0;font-size:12px}
+.logbar button,.logbar input[type=text]{font:inherit;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
+.logbar button.on{border-color:var(--s1);box-shadow:inset 0 0 0 1px var(--s1)}
+.logview{font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;max-height:460px;overflow:auto;border:1px solid var(--line);border-radius:6px;background:var(--bg);padding:6px 0}
+.ll{padding:1px 10px;white-space:pre-wrap;word-break:break-word;border-left:3px solid transparent}
+.ll .lt{color:var(--muted);display:inline-block;min-width:64px}.ll.L-ERROR{border-left-color:var(--s8)}.ll.L-WARN,.ll.L-WARNING{border-left-color:var(--s4)}
+.ll.EV{background:color-mix(in srgb,var(--s8) 12%,transparent);font-weight:600;border-left-color:var(--s8)}
+.ll .x{display:none;color:var(--muted);margin:2px 0 2px 70px}.ll.open .x{display:block}.ll{cursor:default}.ll.hasx{cursor:pointer}
 text{fill:var(--muted);font-size:11px}.gridline{stroke:var(--grid)}.axis{stroke:var(--line)}
 """
 
@@ -394,6 +405,28 @@ const rk=Object.keys(D.resources).filter(k=>k!=='x');
 if(rk.length){const t=D.resources.x;
  card('charts','c-cpu',{title:'Node CPU',xlabel:'t',xfmt:tfmt,unit:'%',x:t,series:rk.slice(0,8).map(k=>({name:k,values:D.resources[k].map(r=>r[0])}))},'docker stats, % of one core (200% = 2 cores). Gaps = node down.');
  card('charts','c-mem',{title:'Node memory',xlabel:'t',xfmt:tfmt,unit:' MiB',x:t,series:rk.slice(0,8).map(k=>({name:k,values:D.resources[k].map(r=>r[1])}))},'Resident container memory.')}
+if(D.nodelogs&&D.nodelogs.collected){
+ const NL=D.nodelogs.nodes,names=Object.keys(NL),root=document.getElementById('nodelogs'),t0=D.t0_epoch;
+ const ev=(D.chaos&&D.chaos.events||[]).map(e=>({t:e.t,ev:true,txt:'⚡ '+e.action+' '+e.node+(e.ok?'':' (failed)')}));
+ let cur=names[0],lv={ERROR:true,WARN:true,INFO:false},q='';
+ const esc=x=>String(x).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+ const bar=document.createElement('div');bar.className='logbar';
+ const view=document.createElement('div');view.className='logview';
+ function lines(){const n=NL[cur];if(!n||!n.excerpt)return[];
+  const L=n.excerpt.map(e=>({t:e.t-t0,l:e.l==='WARNING'?'WARN':e.l,c:e.c,m:e.m,x:e.x}));
+  return L.filter(e=>(lv[e.l]!==undefined?lv[e.l]:true)&&(!q||(e.m+e.c).toLowerCase().includes(q))).concat(ev).sort((a,b)=>a.t-b.t).slice(0,4000)}
+ function paint(){view.innerHTML=lines().map(e=>e.ev?`<div class="ll EV" data-t="${e.t}"><span class="lt">+${e.t.toFixed(1)}s</span> ${esc(e.txt)}</div>`
+   :`<div class="ll L-${e.l}${e.x&&e.x.length?' hasx':''}" data-t="${e.t}"><span class="lt">+${e.t.toFixed(1)}s</span> <b>${e.l}</b> <i>${esc(e.c)}</i> ${esc(e.m)}<div class="x">${(e.x||[]).map(esc).join('\n')}</div></div>`).join('')||'<div class="ll">no lines match</div>';
+  bar.querySelectorAll('button[data-n]').forEach(b=>b.classList.toggle('on',b.dataset.n===cur));
+  bar.querySelectorAll('button[data-l]').forEach(b=>b.classList.toggle('on',lv[b.dataset.l]))}
+ bar.innerHTML=names.map(n=>`<button data-n="${n}">${n}</button>`).join('')+' | '+['ERROR','WARN','INFO'].map(l=>`<button data-l="${l}">${l==='INFO'?'context (INFO)':l}</button>`).join('')+'<input type="text" placeholder="filter text" size="22">'
+  +ev.map((e,i)=>`<button data-e="${i}" title="jump to event">${e.txt}</button>`).join('');
+ bar.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;
+  if(b.dataset.n){cur=b.dataset.n;paint()}else if(b.dataset.l){lv[b.dataset.l]=!lv[b.dataset.l];paint()}
+  else if(b.dataset.e){const t=ev[+b.dataset.e].t;const el=[...view.querySelectorAll('.ll')].find(x=>+x.dataset.t>=t);if(el)view.scrollTop=el.offsetTop-view.offsetTop-40}});
+ bar.querySelector('input').addEventListener('input',e=>{q=e.target.value.toLowerCase();paint()});
+ view.addEventListener('click',e=>{const r=e.target.closest('.ll.hasx');if(r)r.classList.toggle('open')});
+ root.appendChild(bar);root.appendChild(view);paint()}
 let rt;addEventListener('resize',()=>{clearTimeout(rt);rt=setTimeout(()=>charts.forEach(([i,s])=>draw(i,s)),120)});
 matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>charts.forEach(([i,s])=>draw(i,s)));
 """
@@ -459,6 +492,32 @@ def render(summary, data):
         probe_html = ('<h2>Availability probe</h2><div class="card scroll"><p>Independent Java client, new connection per probe, 5s hard timeout. '
                       '"Longest gap" = longest time with no successful probe of that kind.</p><table><tr><th>endpoint</th><th>op</th><th>probes</th><th>success</th>'
                       f'<th>longest gap</th><th>p50 ms</th><th>p99 ms</th><th style="text-align:left">most common error</th></tr>{pr}</table></div>')
+    nodelog_html = ""
+    nlg = data.get("nodelogs")
+    if nlg:
+        why = "; ".join(nlg.get("reasons") or []) or "forced"
+        if not nlg["collected"]:
+            nodelog_html = '<h2>Node logs</h2><div class="card"><p>Clean run (no failed operations, faults or outages) - node logs were not retained.</p></div>'
+        else:
+            rows, grp = "", ""
+            for n, v in nlg["nodes"].items():
+                st = v.get("status", {})
+                lev = v.get("levels", {})
+                bad = st.get("status") not in ("running", "unknown")
+                rows += (f'<tr><td>{esc(n)}</td><td>{"✕ " if bad else "✓ "}{esc(st.get("status", "?"))}'
+                         f'{" (exit " + esc(st.get("exit_code")) + ")" if bad and "exit_code" in st else ""}{" OOM" if st.get("oom_killed") else ""}</td>'
+                         f'<td>{v.get("lines", 0):,}</td><td>{lev.get("ERROR", 0):,}</td><td>{lev.get("WARN", 0) + lev.get("WARNING", 0):,}</td>'
+                         f'<td style="text-align:left"><a href="node-logs/{esc(n)}.log.gz">{esc(n)}.log.gz</a></td></tr>')
+                g = "".join(f'<tr><td>{esc(x["level"])}</td><td>{x["count"]:,}</td><td>+{x["first"] - data["t0_epoch"]:.0f}s … +{x["last"] - data["t0_epoch"]:.0f}s</td>'
+                            f'<td style="text-align:left">{esc(x["cls"])}</td><td style="text-align:left;white-space:normal">{esc(x["example"])}</td></tr>'
+                            for x in v.get("groups", []))
+                if g:
+                    grp += (f'<details><summary>{esc(n)}: {len(v["groups"])} distinct warning/error messages</summary><div class="scroll"><table><tr><th>level</th><th>count</th>'
+                            f'<th>when</th><th style="text-align:left">class</th><th style="text-align:left">first message</th></tr>{g}</table></div></details>')
+            nodelog_html = (f'<h2>Node logs</h2><div class="banner bad"><strong>Retained because:</strong> {esc(why)}</div><div class="card scroll"><table><tr><th>node</th><th>state at end</th>'
+                            f'<th>log lines</th><th>errors</th><th>warnings</th><th style="text-align:left">full log (gzip, test window)</th></tr>{rows}</table>{grp}</div>'
+                            '<div class="card"><p>Viewer: errors and warnings, plus ±20s of context around each fault. Times are relative to test start (same axis as the charts); '
+                            'click a line with a stack trace to expand it.</p><div id="nodelogs"></div></div>')
     when = ""
     if data["meta"].get("start_epoch"):
         when = datetime.datetime.fromtimestamp(data["meta"]["start_epoch"]).strftime("%Y-%m-%d %H:%M:%S")
@@ -471,7 +530,7 @@ def render(summary, data):
 <p class="sub" style="margin-top:8px">Stats cover the steady window ({s["steady_window_s"]}s of {s["duration_s"]}s; warm-up excluded in steady mode).</p>
 <h2>Operations</h2><div class="card scroll"><table><tr><th>operation</th><th>samples</th><th>ops/s</th><th>errors</th><th>avg ms</th>
 <th>p50</th><th>p90</th><th>p95</th><th>p99</th><th>max</th></tr>{lab_rows}</table></div>
-{chaos_html}{probe_html}<h2>Over time</h2><div id="charts"></div>
+{chaos_html}{probe_html}{nodelog_html}<h2>Over time</h2><div id="charts"></div>
 <h2>Errors</h2><div class="card scroll"><table><tr><th>operation</th><th style="text-align:left">message</th><th>count</th></tr>{err_rows}</table></div>
 <h2>Configuration</h2><div class="card"><dl class="kv">{kv(data["env"])}</dl></div>
 <div class="card"><dl class="kv">{kv(prof)}</dl></div>

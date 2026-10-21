@@ -63,5 +63,7 @@ import json,sys,platform,os
 out,s,e=sys.argv[1],int(sys.argv[2]),int(sys.argv[3])
 json.dump({"gridgain_version":os.environ.get("GG_VERSION","unknown"),"start_epoch":s,"end_epoch":e,"host":platform.node(),"loadgen":platform.platform()},open(out+"/run.json","w"))
 PY
+# node logs: kept only if something went wrong (failed ops, faults, outages, breakpoint); must run before the cluster is torn down
+python3 "$ROOT/framework/collect_logs.py" "$OUT" || echo "!! node log collection failed (continuing)"
 python3 "$ROOT/framework/report.py" "$OUT"
 echo ">> report: $OUT/report.html"

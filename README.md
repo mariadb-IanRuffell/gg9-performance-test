@@ -40,6 +40,9 @@ Any profile with `chaos_events=<offset-sec>:<action>:<node>,...` runs `framework
 ```
 The report gains a **Fault injection** section (event timeline, baseline / disruption / after-recovery phase stats, longest full outage, time back to 90% of baseline) and numbered fault markers on every time chart. Cloud: set `chaos_driver=cmd` and the `chaos_cmd_*` templates in the env file (ssh/systemctl, kubectl, SSM). Chaos profiles set `pool_check_query=SELECT 1` so JMeter evicts connections that died with the node; this adds a round trip per operation, so compare chaos runs to a baseline taken with the same setting.
 
+## Node logs
+When a test has failed operations, injected faults, an unplanned node exit, a breakpoint or probe failures, `framework/collect_logs.py` saves every node\'s server log for the test window (`results/<run>/node-logs/<node>.log.gz`) and the report gains a **Node logs** section: node state at the end (running / exited + exit code / OOM), counts of errors and warnings, grouped distinct messages, and a filterable viewer (errors, warnings, ±20 s of context around each fault, jump-to-fault buttons). Clean runs keep nothing. Docker clusters are read with `docker logs`; for cloud set `log_cmd` in the env file (e.g. `ssh {node}.internal 'sudo journalctl -u gridgain9 --since @{since} --until @{until} --no-pager'`).
+
 ## Layout
 - `profiles/*.properties` – one file per test: workload, mode, threads/ramp/duration, op mix, SLO stop criteria.
 - `config/env/*.properties` – where it runs (JDBC URL, zone sizing, resource collector). Add `cloud.properties` from the example.
